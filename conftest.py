@@ -1,16 +1,4 @@
-"""
-conftest.py – FeedbackService
-Place at the ROOT of the feedback-service repo alongside feedback.py.
-
-Mocks:
-  - utility.get  (EventService HTTP calls)
-  - feedback_message_broker.start_receiver / subscribe / publish
-
-volunteer-shared must be installed (via Azure Artifacts) before running tests,
-so database, models, auth etc. are importable as regular installed packages.
-"""
 import os
-
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -27,9 +15,7 @@ with patch.dict(os.environ, {
     import models
 
 database.engine = create_engine(SQLITE_URL, connect_args={"check_same_thread": False})
-database.SessionLocal = sessionmaker(
-    autocommit=False, autoflush=False, bind=database.engine
-)
+database.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=database.engine)
 
 for table in models.Base.metadata.tables.values():
     table.schema = None
@@ -39,16 +25,16 @@ from database import get_db
 from auth import get_current_user
 
 
-def _mock_event_found(*args, **kwargs):
-    resp = MagicMock()
-    resp.status_code = 200
-    return resp
+def _event_found(*args, **kwargs):
+    m = MagicMock()
+    m.status_code = 200
+    return m
 
 
-def _mock_event_not_found(*args, **kwargs):
-    resp = MagicMock()
-    resp.status_code = 404
-    return resp
+def _event_not_found(*args, **kwargs):
+    m = MagicMock()
+    m.status_code = 404
+    return m
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -74,6 +60,7 @@ def db():
 @pytest.fixture()
 def client(db):
     from fastapi.testclient import TestClient
+    from main import app
 
     test_user = models.User(
         id=1, login="testuser",
@@ -84,21 +71,17 @@ def client(db):
         id=1, event_date=datetime(2025, 9, 1, 10, 0),
         place="Test Venue", description="Test event",
     )
-    # Create a booking so feedback creation passes the booking check
     db.add(test_user)
     db.add(test_event)
     db.flush()
-    test_booking = models.Booking(
-        id=1, user_id=test_user.id, event_id=test_event.id,
-    )
+    test_booking = models.Booking(id=1, user_id=test_user.id, event_id=test_event.id)
     db.add(test_booking)
     db.commit()
 
-    from main import app
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_current_user] = lambda: test_user
 
-    with patch("utility.get", side_effect=_mock_event_found), \
+    with patch("utility.get", side_effect=_event_found), \
          patch("feedback_message_broker.start_receiver", return_value=None), \
          patch("feedback_message_broker.subscribe", return_value=None):
         with TestClient(app) as c:
@@ -109,8 +92,8 @@ def client(db):
 
 @pytest.fixture()
 def client_no_booking(db):
-    """Client where user has no booking for the event — feedback should be 403."""
     from fastapi.testclient import TestClient
+    from main import app
 
     user2 = models.User(
         id=2, login="nobooking",
@@ -125,11 +108,10 @@ def client_no_booking(db):
     db.add(event2)
     db.commit()
 
-    from main import app
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_current_user] = lambda: user2
 
-    with patch("utility.get", side_effect=_mock_event_found), \
+    with patch("utility.get", side_effect=_event_found), \
          patch("feedback_message_broker.start_receiver", return_value=None), \
          patch("feedback_message_broker.subscribe", return_value=None):
         with TestClient(app) as c:

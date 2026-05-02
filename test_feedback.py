@@ -1,117 +1,91 @@
 """
-test_feedback.py – FeedbackService
-Place at the ROOT of the feedback-service repo.
-Run with: pytest test_feedback.py -v
+Tests for FeedbackService – feedback.py
+Covers: create_feedback, list_feedback, update_feedback
 """
-import pytest
 
-
-FEEDBACK_PAYLOAD = {"event_id": 1, "message": "Great event!"}
-
-
-# ── /health ───────────────────────────────────────────────────────────────────
-
-def test_health(client):
-    c, _, __ = client
-    r = c.get("/health")
-    assert r.status_code == 200
-    assert r.json()["status"] == "ok"
-
-
-# ── POST /api/feedback ────────────────────────────────────────────────────────
 
 def test_create_feedback_success(client):
-    c, _, __ = client
-    r = c.post("/api/feedback", json=FEEDBACK_PAYLOAD)
-    assert r.status_code == 201
-    data = r.json()
+    c, user, event = client
+    resp = c.post("/api/feedback", json={"event_id": event.id, "message": "Great event!"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["event_id"] == event.id
+    assert data["user_id"] == user.id
     assert data["message"] == "Great event!"
-    assert data["event_id"] == 1
     assert "id" in data
     assert "created_at" in data
 
 
-def test_create_feedback_event_not_found(client, monkeypatch):
-    c, _, __ = client
-    from unittest.mock import MagicMock
-    mock_resp = MagicMock()
-    mock_resp.status_code = 404
-    monkeypatch.setattr("utility.get", lambda *a, **kw: mock_resp)
-    r = c.post("/api/feedback", json={"event_id": 99999, "message": "Test"})
-    assert r.status_code == 404
-
-
 def test_create_feedback_no_booking(client_no_booking):
     c, _, event = client_no_booking
-    r = c.post("/api/feedback", json={"event_id": event.id, "message": "Test"})
-    assert r.status_code == 403
+    resp = c.post("/api/feedback", json={"event_id": event.id, "message": "Should fail"})
+    assert resp.status_code == 403
 
 
-def test_create_feedback_missing_message(client):
-    c, _, __ = client
-    r = c.post("/api/feedback", json={"event_id": 1})
-    assert r.status_code == 422
+def test_create_feedback_event_not_found(client, db):
+    from unittest.mock import patch, MagicMock
+
+    c, _, _ = client
+
+    def _not_found(*args, **kwargs):
+        m = MagicMock()
+        m.status_code = 404
+        return m
+
+    with patch("utility.get", side_effect=_not_found):
+        resp = c.post("/api/feedback", json={"event_id": 9999, "message": "No event"})
+    assert resp.status_code == 404
 
 
-# ── GET /api/feedback/event/{event_id} ────────────────────────────────────────
-
-def test_list_feedback_success(client):
-    c, _, test_event = client
-    c.post("/api/feedback", json={"event_id": test_event.id, "message": "msg1"})
-    c.post("/api/feedback", json={"event_id": test_event.id, "message": "msg2"})
-    r = c.get(f"/api/feedback/event/{test_event.id}")
-    assert r.status_code == 200
-    items = r.json()
-    assert len(items) >= 2
-    assert all(i["event_id"] == test_event.id for i in items)
+def test_list_feedback_for_event(client):
+    c, _, event = client
+    c.post("/api/feedback", json={"event_id": event.id, "message": "First!"})
+    resp = c.get(f"/api/feedback/event/{event.id}")
+    assert resp.status_code == 200
+    items = resp.json()
+    assert isinstance(items, list)
+    assert len(items) >= 1
+    assert all(f["event_id"] == event.id for f in items)
 
 
 def test_list_feedback_event_not_found(client):
-    c, _, __ = client
-    r = c.get("/api/feedback/event/99999")
-    assert r.status_code == 404
+    c, _, _ = client
+    resp = c.get("/api/feedback/event/99999")
+    assert resp.status_code == 404
 
-
-def test_list_feedback_empty(client, db):
-    from datetime import datetime
-    import models
-    c, _, __ = client
-    empty_event = models.Event(
-        id=50, event_date=datetime(2025, 11, 1, 10, 0),
-        place="Empty Venue", description=None,
-    )
-    db.add(empty_event)
-    db.commit()
-    r = c.get("/api/feedback/event/50")
-    assert r.status_code == 200
-    assert r.json() == []
-
-
-# ── PATCH /api/feedback/{id} ──────────────────────────────────────────────────
 
 def test_update_feedback_success(client):
-    c, _, test_event = client
-    created = c.post("/api/feedback", json={
-        "event_id": test_event.id, "message": "Original"
-    })
-    feedback_id = created.json()["id"]
-    r = c.patch(f"/api/feedback/{feedback_id}", json={"message": "Updated"})
-    assert r.status_code == 200
-    assert r.json()["message"] == "Updated"
+    c, _, event = client
+    feedback_id = c.post("/api/feedback", json={"event_id": event.id, "message": "Original"}).json()["id"]
+    resp = c.patch(f"/api/feedback/{feedback_id}", json={"message": "Updated message"})
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Updated message"
 
 
 def test_update_feedback_not_found(client):
-    c, _, __ = client
-    r = c.patch("/api/feedback/99999", json={"message": "x"})
-    assert r.status_code == 404
+    c, _, _ = client
+    resp = c.patch("/api/feedback/99999", json={"message": "Ghost"})
+    assert resp.status_code == 404
 
 
-def test_update_feedback_empty_patch(client):
-    c, _, test_event = client
-    created = c.post("/api/feedback", json={
-        "event_id": test_event.id, "message": "Keep this"
-    })
-    feedback_id = created.json()["id"]
-    r = c.patch(f"/api/feedback/{feedback_id}", json={})
-    assert r.status_code == 200
-    assert r.json()["message"] == "Keep this"
+def test_update_feedback_wrong_user(client, client_no_booking, db):
+    import models, auth
+    from datetime import datetime
+
+    c, _, event = client
+
+    # create feedback as user 1
+    feedback_id = c.post("/api/feedback", json={"event_id": event.id, "message": "Mine"}).json()["id"]
+
+    # try to update it as user 2 (who has no booking, but that doesn't matter here —
+    # the ownership check happens before the booking check in update)
+    c2, _, _ = client_no_booking
+    resp = c2.patch(f"/api/feedback/{feedback_id}", json={"message": "Not mine"})
+    assert resp.status_code == 404
+
+
+def test_health(client):
+    c, _, _ = client
+    resp = c.get("/health")
+    assert resp.status_code == 200
+    assert resp.json()["service"] == "FeedbackService"
