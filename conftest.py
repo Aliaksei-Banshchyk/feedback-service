@@ -49,11 +49,11 @@ def create_tables():
 @pytest.fixture()
 def db():
     connection = database.engine.connect()
-    transaction = connection.begin()
+    connection.begin()
     session = database.SessionLocal(bind=connection)
     yield session
     session.close()
-    transaction.rollback()
+    connection.rollback()
     connection.close()
 
 
@@ -62,20 +62,21 @@ def client(db):
     from fastapi.testclient import TestClient
     from main import app
 
+    # No hardcoded IDs — let the DB auto-assign to avoid clashes across tests
     test_user = models.User(
-        id=1, login="testuser",
+        login="testuser",
         password=auth.hash_password("password123"),
         name="Test User",
     )
     test_event = models.Event(
-        id=1, event_date=datetime(2025, 9, 1, 10, 0),
-        place="Test Venue", description="Test event",
+        event_date=datetime(2025, 9, 1, 10, 0),
+        place="Test Venue",
+        description="Test event",
     )
     db.add(test_user)
     db.add(test_event)
     db.flush()
-    test_booking = models.Booking(id=1, user_id=test_user.id, event_id=test_event.id)
-    db.add(test_booking)
+    db.add(models.Booking(user_id=test_user.id, event_id=test_event.id))
     db.commit()
 
     app.dependency_overrides[get_db] = lambda: db
@@ -86,35 +87,5 @@ def client(db):
          patch("feedback_message_broker.subscribe", return_value=None):
         with TestClient(app) as c:
             yield c, test_user, test_event
-
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture()
-def client_no_booking(db):
-    from fastapi.testclient import TestClient
-    from main import app
-
-    user2 = models.User(
-        id=2, login="nobooking",
-        password=auth.hash_password("password123"),
-        name="No Booking User",
-    )
-    event2 = models.Event(
-        id=2, event_date=datetime(2025, 10, 1, 10, 0),
-        place="Other Venue", description=None,
-    )
-    db.add(user2)
-    db.add(event2)
-    db.commit()
-
-    app.dependency_overrides[get_db] = lambda: db
-    app.dependency_overrides[get_current_user] = lambda: user2
-
-    with patch("utility.get", side_effect=_event_found), \
-         patch("feedback_message_broker.start_receiver", return_value=None), \
-         patch("feedback_message_broker.subscribe", return_value=None):
-        with TestClient(app) as c:
-            yield c, user2, event2
 
     app.dependency_overrides.clear()
